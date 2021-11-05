@@ -1,10 +1,12 @@
 {
 	"folders": [
 		{
-			"path": "BTMixerInput"
-		},
-		{
-			"path": "BTMixerOutput"
+			"path": "."
 		}
-	]
+	],
+	"settings": {
+		"files.associations": {
+			"vector": "cpp"
+		}
+	}
 }

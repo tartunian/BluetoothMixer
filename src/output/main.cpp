@@ -32,8 +32,8 @@ i2s_config_t slave_i2s_config = {
     .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
     .communication_format = (i2s_comm_format_t)I2S_COMM_FORMAT_STAND_I2S,
     .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
-    .dma_buf_count = 6,
-    .dma_buf_len = 100,
+    .dma_buf_count = 10,
+    .dma_buf_len = 1024,
     .use_apll = 0};
 i2s_pin_config_t slave_pin_config = {
     .bck_io_num = SLAVE_BCK_IO,
@@ -42,62 +42,99 @@ i2s_pin_config_t slave_pin_config = {
     .data_in_num = DATA_IN_IO,
 };
 
-std::vector<const char *> device_names = {"TOZO-T10", "DEVICE2", "DEVICE3"};
+std::vector<const char *> device_names = {"TOZO-T10", "Bose On-Ear Wireless", "Taylor's AirPods"};
 
-// int32_t sample;
-char sample[128];
+int8_t samples[4096];
 size_t bytes_read;
+uint8_t frame_count = 0;
 
 // The supported audio codec in ESP32 A2DP is SBC. SBC audio stream is encoded
 // from PCM data normally formatted as 44.1kHz sampling rate, two-channel 16-bit sample data
 int32_t get_data_channels(Frame *frame, int32_t channel_len)
 {
 
-  Serial.println("get_data");
-  for(int i=0; i<channel_len; i++) {
-    frame[i].channel1 = frame[i].channel2 = sample[i];
-  Serial.println(sample[i]);
-  }
+  // should write minimum of bytes_read and 4096
 
-  // static double m_time = 0.0;
-  // double m_amplitude = 10000.0; // -32,768 to 32,767
-  // double m_deltaTime = 1.0 / 44100.0;
-  // double m_phase = 0.0;
-  // double double_Pi = M_PI * 2.0;
-  // // fill the channel data
-  // for (int sample = 0; sample < channel_len; ++sample)
-  // {
-  //   double angle = double_Pi * c3_frequency * m_time + m_phase;
-  //   frame[sample].channel1 = m_amplitude * sin(angle);
-  //   frame[sample].channel2 = frame[sample].channel1;
-  //   m_time += m_deltaTime;
+  memcpy(frame, &samples[frame_count * 512], channel_len * 4);
+  ESP_LOGI(BT_AV_TAG, "Wrote %d samples", channel_len * 4);
+
+  // for(int i=0; i<channel_len; i++) {
+  //   dacWrite(25, (frame[i].channel1 >> 8));
   // }
 
+  frame_count = (frame_count + 1) % 8;
   return channel_len;
+}
+
+QueueHandle_t i2s_event_queue;
+TaskHandle_t i2sReaderTaskHandle;
+void i2sReaderTask(void *param)
+{
+  while (true)
+  {
+    i2s_read(I2S_NUM_1, samples, 4096, &bytes_read, 2000);
+    // ESP_LOGI(BT_AV_TAG, "i2s_read read %d bytes", bytes_read);
+  }
+}
+
+TaskHandle_t statusReporterTaskHandle;
+void statusReporterTask(void *param)
+{
+  while (true)
+  {
+    ESP_LOGI(BT_AV_TAG, "Periodic Status Report:");
+    ESP_LOGI(BT_AV_TAG, "\t - frame_count: %d/8", frame_count);
+    ESP_LOGI(BT_AV_TAG, "\t - bytes in buffer: %d", bytes_read);
+    vTaskDelay(2000 / portTICK_PERIOD_MS);
+  }
 }
 
 void setup()
 {
-  Serial.begin(115200);
+  Serial.begin(921600);
 
-  i2s_driver_install(I2S_NUM_1, &slave_i2s_config, 0, NULL);
+  i2s_driver_install(I2S_NUM_1, &slave_i2s_config, 4, &i2s_event_queue);
   i2s_set_pin(I2S_NUM_1, &slave_pin_config);
+
+  disableCore0WDT();
 
   a2dp_source.start(device_names, get_data_channels);
   a2dp_source.disconnect();
-  //a2dp_source.set_auto_reconnect("b0:05:94:eb:52:70");
+  // a2dp_source.set_auto_reconnect("b0:05:94:eb:52:70");
+  a2dp_source.set_auto_reconnect("28:11:a5:1a:74:b5");
   a2dp_source.set_reset_ble(true);
 
+  xTaskCreate(i2sReaderTask, "i2s Reader", 1024, &i2s_event_queue, 3, &i2sReaderTaskHandle);
+  ESP_LOGI(BT_AV_TAG, "Created i2sReaderTask");
+
+  xTaskCreate(statusReporterTask, "Status Reporter", 2048, NULL, 4, &statusReporterTaskHandle);
+  ESP_LOGI(BT_AV_TAG, "Created statusReporterTask");
 }
 
+i2s_event_t evt;
 void loop()
 {
-  if (i2s_read(I2S_NUM_1, &sample, 128, &bytes_read, portMAX_DELAY) != ESP_OK)
-  {
-    ESP_LOGE(BT_AV_TAG, "i2s_read failed");
-  }
-  else
-  {
-    ESP_LOGI(BT_AV_TAG, "i2s_read value: %d", sample);
-  }
+  // i2s_read(I2S_NUM_1, samples, 4096, &bytes_read, 2000);
+  // ESP_LOGI(BT_AV_TAG, "i2s_read read %d bytes", bytes_read);
+  // if (xQueueReceive(i2s_event_queue, &evt, 200) == pdPASS)
+  // {
+
+  //   if (evt.type == I2S_EVENT_RX_DONE)
+  //   {
+  //     // samplesReady = 1;
+  //     ESP_LOGI(BT_AV_TAG, "I2S_EVENT_RX_DONE");
+  //   }
+  //   else if (evt.type == I2S_EVENT_DMA_ERROR)
+  //   {
+  //     ESP_LOGI(BT_AV_TAG, "I2S_EVENT_DMA_ERROR");
+  //   }
+  //   else if (evt.type == I2S_EVENT_MAX)
+  //   {
+  //     ESP_LOGI(BT_AV_TAG, "I2S_EVENT_MAX");
+  //   }
+  //   else if (evt.type == I2S_EVENT_TX_DONE)
+  //   {
+  //     ESP_LOGI(BT_AV_TAG, "I2S_EVENT_TX_DONE");
+  //   }
+  // }
 }
